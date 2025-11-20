@@ -3,7 +3,7 @@ name: Seaport & Opensea Sync
 on:
   workflow_dispatch:        # Manual işə salmaq üçün
   schedule:
-    - cron: "0 * * * *"    # Hər saatın 0 dəqiqəsində sync
+    - cron: "5 * * * *"    # Hər saatın 0 dəqiqəsində sync
 
 jobs:
   nft-sync:
