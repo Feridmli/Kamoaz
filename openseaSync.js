@@ -1,6 +1,6 @@
 /**
  * openseaSync.js — Opensea Active Listings → Supabase
- * Manual sync, API-based, On-chain event-lərlə birləşdirilə bilər
+ * Manual sync, API-based, retry + stable
  */
 
 import fetch from "node-fetch";
@@ -26,27 +26,38 @@ const OPENSEA_API_KEY = process.env.OPENSEA_API_KEY;
 const BACKEND_URL = process.env.BACKEND_URL;
 const NFT_CONTRACT_ADDRESS = process.env.NFT_CONTRACT_ADDRESS;
 const CHAIN = "ethereum"; // polygon / arbitrum varsa dəyişdir
+const RETRY_DELAY = 2000; // ms
+const MAX_RETRIES = 3;
 
 // -----------------------
-// 🟢 Fetch Listings
+// 🟢 Fetch Listings w/ Retry
 // -----------------------
-async function fetchListings(cursor = null) {
-  let url = `https://api.opensea.io/v2/orders/${CHAIN}/seaport/listings?asset_contract_address=${NFT_CONTRACT_ADDRESS}&order_direction=asc&limit=50`;
-  if (cursor) url += `&cursor=${cursor}`;
+async function fetchListings(cursor = null, retries = MAX_RETRIES) {
+  try {
+    let url = `https://api.opensea.io/v2/orders/${CHAIN}/seaport/listings?asset_contract_address=${NFT_CONTRACT_ADDRESS}&order_direction=asc&limit=50`;
+    if (cursor) url += `&cursor=${cursor}`;
 
-  const res = await fetch(url, {
-    headers: {
-      "Accept": "application/json",
-      "X-API-KEY": OPENSEA_API_KEY,
-    },
-  });
+    const res = await fetch(url, {
+      headers: {
+        "Accept": "application/json",
+        "X-API-KEY": OPENSEA_API_KEY,
+      },
+    });
 
-  if (!res.ok) {
-    throw new Error(`Opensea API error: ${res.status} ${await res.text()}`);
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Opensea API error: ${res.status} ${text}`);
+    }
+
+    return await res.json();
+  } catch (err) {
+    if (retries > 0) {
+      console.warn(`⚠️ Retry fetchListings, remaining: ${retries}, error: ${err.message}`);
+      await new Promise(r => setTimeout(r, RETRY_DELAY));
+      return fetchListings(cursor, retries - 1);
+    }
+    throw err;
   }
-
-  const data = await res.json();
-  return data;
 }
 
 // -----------------------
@@ -96,26 +107,28 @@ async function main() {
   let cursor = null;
   let total = 0;
 
-  do {
-    const data = await fetchListings(cursor);
-    const orders = data.orders || [];
+  try {
+    do {
+      const data = await fetchListings(cursor);
+      const orders = data.orders || [];
 
-    for (const order of orders) {
-      await saveOrder(order);
-      total++;
-    }
+      for (const order of orders) {
+        await saveOrder(order);
+        total++;
+      }
 
-    cursor = data.next || null;
-    console.log(`ℹ️ Fetched ${orders.length} listings, next cursor: ${cursor}`);
-  } while (cursor);
+      cursor = data.next || null;
+      console.log(`ℹ️ Fetched ${orders.length} listings, next cursor: ${cursor}`);
+    } while (cursor);
 
-  console.log(`🎉 Sync tamamlandı! Total listings saved: ${total}`);
+    console.log(`🎉 Sync tamamlandı! Total listings saved: ${total}`);
+  } catch (err) {
+    console.error("💀 Fatal error:", err.message);
+    process.exit(1);
+  }
 }
 
 // -----------------------
 // 🔥 Run
 // -----------------------
-main().catch((err) => {
-  console.error("💀 Fatal error:", err);
-  process.exit(1);
-});
+main();
