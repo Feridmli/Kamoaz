@@ -1,8 +1,10 @@
 /**
  * magicedenSync.js — Magic Eden Active Listings → Supabase
+ * Cloudflare-safe + free API limit safe (1 req/sec)
  */
 
 import fetch from "node-fetch";
+import https from "https";
 import dotenv from "dotenv";
 import { nanoid } from "nanoid";
 import { createClient } from "@supabase/supabase-js";
@@ -19,23 +21,30 @@ const supabase = createClient(
 );
 
 // -----------------------
-// 🔑 Environment
+// 🔧 ENV
 // -----------------------
-const BACKEND_URL = process.env.BACKEND_URL;
 const NFT_SYMBOL = process.env.MAGICEDEN_SYMBOL || "KAU";
 const LIMIT = 50;
-const RETRY_DELAY = 2000; 
 const MAX_RETRIES = 3;
-
-// ApeChain decimals
-const DECIMALS = 9; // ApeChain APE decimals
+const BASE_DELAY = 1500; // 1.5 sec → Cloudflare & FREE API safe
+const DECIMALS = 9; // ApeChain decimals
 
 // -----------------------
-// 🟢 Fetch Listings w/ Retry
+// 🌐 Keep-Alive Agent
 // -----------------------
-async function fetchListings(offset = 0, retries = MAX_RETRIES) {
+const agent = new https.Agent({
+  keepAlive: true,
+  maxSockets: 5,
+  timeout: 15000
+});
+
+// -----------------------
+// 🟢 Fetch Listings + Retry + Backoff
+// -----------------------
+async function fetchListings(offset = 0, retry = 0) {
   try {
     const url = `https://api-mainnet.magiceden.io/rpc/getListedNFTsByQuery`;
+
     const body = {
       query: { symbol: NFT_SYMBOL },
       sortBy: "price",
@@ -46,23 +55,40 @@ async function fetchListings(offset = 0, retries = MAX_RETRIES) {
 
     const res = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body)
+      headers: {
+        "Content-Type": "application/json",
+
+        // ⭐ Cloudflare bypass headers
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "Accept": "application/json",
+        "Origin": "https://magiceden.io",
+        "Referer": "https://magiceden.io/"
+      },
+      body: JSON.stringify(body),
+      agent,
+      timeout: 15000
     });
 
     if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`Magic Eden API error: ${res.status} ${text}`);
+      const txt = await res.text();
+      throw new Error(`ME API error ${res.status}: ${txt}`);
     }
 
     return await res.json();
+
   } catch (err) {
-    if (retries > 0) {
-      console.warn(`⚠️ Retry fetchListings, remaining: ${retries}, error: ${err.message}`);
-      await new Promise(r => setTimeout(r, RETRY_DELAY));
-      return fetchListings(offset, retries - 1);
+    if (retry < MAX_RETRIES) {
+      const delay = BASE_DELAY * (retry + 1);
+
+      console.warn(
+        `⚠️ Retry #${retry + 1}/${MAX_RETRIES} after ${delay}ms | Error: ${err.message}`
+      );
+
+      await new Promise(r => setTimeout(r, delay));
+      return fetchListings(offset, retry + 1);
     }
-    throw err;
+
+    throw new Error(`Magic Eden fatal: ${err.message}`);
   }
 }
 
@@ -74,12 +100,10 @@ async function saveOrder(order) {
   const now = new Date().toISOString();
 
   const tokenId = order.tokenMint;
-  const price = order.price ? parseFloat(order.price) / Math.pow(10, DECIMALS) : null;
-  const sellerAddress = order.seller?.toLowerCase() || null;
-  const image = order.image || null;
+  const price = order.price ? Number(order.price) / Math.pow(10, DECIMALS) : null;
+  const seller = order.seller?.toLowerCase() || null;
 
-  // Unikal orderHash: token + seller + price
-  const orderHash = `${tokenId}_${sellerAddress}_${price}`;
+  const orderHash = `${tokenId}_${seller}_${price}`;
 
   const { error } = await supabase.from("orders").upsert(
     {
@@ -88,13 +112,13 @@ async function saveOrder(order) {
       price,
       nftContract: process.env.NFT_CONTRACT_ADDRESS,
       marketplaceContract: "magiceden",
-      seller: sellerAddress,
+      seller,
       buyerAddress: null,
       seaportOrder: order,
       orderHash,
       onChain: false,
       status: "active",
-      image,
+      image: order.image || null,
       createdAt: now,
       updatedAt: now
     },
@@ -102,36 +126,46 @@ async function saveOrder(order) {
   );
 
   if (error) console.error("❌ Supabase upsert error:", error);
-  else console.log(`✅ Saved: tokenId ${tokenId}`);
+  else console.log(`✅ Saved tokenId: ${tokenId}`);
 }
 
 // -----------------------
 // 🔄 Main Sync Loop
 // -----------------------
 async function main() {
-  console.log("🚀 Magic Eden Active Listings Sync başladı...");
+  console.log(`🚀 Magic Eden Sync başladı... Symbol: ${NFT_SYMBOL}`);
+
   let offset = 0;
   let total = 0;
 
   try {
     while (true) {
+      console.log(`🌐 Fetching offset ${offset}...`);
+
       const data = await fetchListings(offset);
       const listings = data.results || [];
 
-      if (listings.length === 0) break;
+      if (listings.length === 0) {
+        console.log("⛔ No more listings.");
+        break;
+      }
 
-      for (const order of listings) {
-        await saveOrder(order);
+      for (const nft of listings) {
+        await saveOrder(nft);
+
+        // ⭐ Rate limit: 1 API request per second (safe)
+        await new Promise(r => setTimeout(r, 1200));
         total++;
       }
 
       offset += listings.length;
-      console.log(`ℹ️ Fetched ${listings.length} listings, offset: ${offset}`);
+      console.log(`➡️ Next offset: ${offset}`);
     }
 
-    console.log(`🎉 Sync tamamlandı! Total listings saved: ${total}`);
+    console.log(`🎉 Sync Bitdi! Total saved: ${total}`);
+
   } catch (err) {
-    console.error("💀 Fatal error:", err.message);
+    console.error(`💀 Fatal error: ${err.message}`);
     process.exit(1);
   }
 }
