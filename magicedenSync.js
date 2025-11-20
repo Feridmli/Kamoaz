@@ -1,6 +1,5 @@
 /**
- * openseaSync.js — Opensea Active Listings → Supabase
- * Manual sync, API-based, retry + stable
+ * magicedenSync.js — Magic Eden Active Listings → Supabase
  */
 
 import fetch from "node-fetch";
@@ -22,31 +21,38 @@ const supabase = createClient(
 // -----------------------
 // 🔑 Environment
 // -----------------------
-const OPENSEA_API_KEY = process.env.OPENSEA_API_KEY;
 const BACKEND_URL = process.env.BACKEND_URL;
-const NFT_CONTRACT_ADDRESS = process.env.NFT_CONTRACT_ADDRESS;
-const CHAIN = "ethereum"; // polygon / arbitrum varsa dəyişdir
-const RETRY_DELAY = 2000; // ms
+const NFT_SYMBOL = process.env.MAGICEDEN_SYMBOL || "KAU";
+const LIMIT = 50;
+const RETRY_DELAY = 2000; 
 const MAX_RETRIES = 3;
+
+// ApeChain decimals
+const DECIMALS = 9; // ApeChain APE decimals
 
 // -----------------------
 // 🟢 Fetch Listings w/ Retry
 // -----------------------
-async function fetchListings(cursor = null, retries = MAX_RETRIES) {
+async function fetchListings(offset = 0, retries = MAX_RETRIES) {
   try {
-    let url = `https://api.opensea.io/v2/orders/${CHAIN}/seaport/listings?asset_contract_address=${NFT_CONTRACT_ADDRESS}&order_direction=asc&limit=50`;
-    if (cursor) url += `&cursor=${cursor}`;
+    const url = `https://api-mainnet.magiceden.io/rpc/getListedNFTsByQuery`;
+    const body = {
+      query: { symbol: NFT_SYMBOL },
+      sortBy: "price",
+      sortDirection: "asc",
+      offset,
+      limit: LIMIT
+    };
 
     const res = await fetch(url, {
-      headers: {
-        "Accept": "application/json",
-        "X-API-KEY": OPENSEA_API_KEY,
-      },
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
     });
 
     if (!res.ok) {
       const text = await res.text();
-      throw new Error(`Opensea API error: ${res.status} ${text}`);
+      throw new Error(`Magic Eden API error: ${res.status} ${text}`);
     }
 
     return await res.json();
@@ -54,7 +60,7 @@ async function fetchListings(cursor = null, retries = MAX_RETRIES) {
     if (retries > 0) {
       console.warn(`⚠️ Retry fetchListings, remaining: ${retries}, error: ${err.message}`);
       await new Promise(r => setTimeout(r, RETRY_DELAY));
-      return fetchListings(cursor, retries - 1);
+      return fetchListings(offset, retries - 1);
     }
     throw err;
   }
@@ -67,59 +73,61 @@ async function saveOrder(order) {
   const id = nanoid();
   const now = new Date().toISOString();
 
-  const tokenId = order.asset?.token_id || null;
-  const price = order.current_price ? parseFloat(order.current_price) / 1e18 : null; // Ether
-  const sellerAddress = order.maker?.address?.toLowerCase() || null;
+  const tokenId = order.tokenMint;
+  const price = order.price ? parseFloat(order.price) / Math.pow(10, DECIMALS) : null;
+  const sellerAddress = order.seller?.toLowerCase() || null;
+  const image = order.image || null;
+
+  // Unikal orderHash: token + seller + price
+  const orderHash = `${tokenId}_${sellerAddress}_${price}`;
 
   const { error } = await supabase.from("orders").upsert(
     {
       id,
       tokenId,
       price,
-      nftContract: NFT_CONTRACT_ADDRESS,
-      marketplaceContract: order.exchange || null,
+      nftContract: process.env.NFT_CONTRACT_ADDRESS,
+      marketplaceContract: "magiceden",
       seller: sellerAddress,
       buyerAddress: null,
       seaportOrder: order,
-      orderHash: order.order_hash,
+      orderHash,
       onChain: false,
       status: "active",
-      image: order.asset?.image_url || null,
+      image,
       createdAt: now,
-      updatedAt: now,
+      updatedAt: now
     },
     { onConflict: "orderHash" }
   );
 
-  if (error) {
-    console.error("❌ Supabase upsert error:", error);
-  } else {
-    console.log(`✅ Saved: tokenId ${tokenId} orderHash ${order.order_hash}`);
-  }
+  if (error) console.error("❌ Supabase upsert error:", error);
+  else console.log(`✅ Saved: tokenId ${tokenId}`);
 }
 
 // -----------------------
 // 🔄 Main Sync Loop
 // -----------------------
 async function main() {
-  console.log("🚀 Opensea Active Listings Sync başladı...");
-
-  let cursor = null;
+  console.log("🚀 Magic Eden Active Listings Sync başladı...");
+  let offset = 0;
   let total = 0;
 
   try {
-    do {
-      const data = await fetchListings(cursor);
-      const orders = data.orders || [];
+    while (true) {
+      const data = await fetchListings(offset);
+      const listings = data.results || [];
 
-      for (const order of orders) {
+      if (listings.length === 0) break;
+
+      for (const order of listings) {
         await saveOrder(order);
         total++;
       }
 
-      cursor = data.next || null;
-      console.log(`ℹ️ Fetched ${orders.length} listings, next cursor: ${cursor}`);
-    } while (cursor);
+      offset += listings.length;
+      console.log(`ℹ️ Fetched ${listings.length} listings, offset: ${offset}`);
+    }
 
     console.log(`🎉 Sync tamamlandı! Total listings saved: ${total}`);
   } catch (err) {
@@ -128,7 +136,4 @@ async function main() {
   }
 }
 
-// -----------------------
-// 🔥 Run
-// -----------------------
 main();
