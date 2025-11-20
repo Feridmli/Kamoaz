@@ -24,7 +24,7 @@ const supabase = createClient(
 // 🔧 ENV
 // -----------------------
 const NFT_SYMBOL = process.env.MAGICEDEN_SYMBOL || "KAU";
-const LIMIT = 50;
+const LIMIT = 5;
 const MAX_RETRIES = 3;
 const BASE_DELAY = 1500; // 1.5 sec → Cloudflare & FREE API safe
 const DECIMALS = 9; // ApeChain decimals
