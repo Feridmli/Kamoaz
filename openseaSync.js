@@ -25,7 +25,7 @@ const supabase = createClient(
 const NFT_CONTRACT = process.env.NFT_CONTRACT_ADDRESS;
 const LIMIT = 5;
 const MAX_RETRIES = 3;
-const BASE_DELAY = 1200; // ms → 1 req/sec safe
+const BASE_DELAY = 6000; // ms → 1 req/sec safe
 const OPENSEA_API_KEY = process.env.OPENSEA_API_KEY;
 
 // -----------------------
