@@ -7,7 +7,7 @@
     "build": "vite build",
     "start": "node server.js",
     "sync": "node syncSeaportOrders.js",
-    "sync:opensea": "node openseaSync.js"
+    "sync:magiceden": "node magicedenSync.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
